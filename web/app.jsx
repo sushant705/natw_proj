@@ -16,14 +16,10 @@ function parseCSV(text) {
   return lines.slice(1).map((line, i) => {
     const parts = line.split(",").map((p) => p.trim());
     const date = new Date(parts[dateIdx]);
-    if (Number.isNaN(date.getTime())) {
-      throw new Error(`Invalid date at row ${i + 2}`);
-    }
+    if (Number.isNaN(date.getTime())) throw new Error(`Invalid date at row ${i + 2}`);
 
     const income = Number(parts[incomeIdx]);
-    if (!Number.isFinite(income)) {
-      throw new Error(`Invalid income at row ${i + 2}`);
-    }
+    if (!Number.isFinite(income)) throw new Error(`Invalid income at row ${i + 2}`);
 
     let essential_expense = null;
     if (expenseIdx !== -1 && parts[expenseIdx] !== "") {
@@ -31,15 +27,12 @@ function parseCSV(text) {
       if (!Number.isFinite(exp)) throw new Error(`Invalid essential_expense at row ${i + 2}`);
       essential_expense = exp;
     }
-
     return { date, income, essential_expense };
   });
 }
 
 function monthKey(date) {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  return `${y}-${m}`;
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
 }
 
 function aggregateMonthly(rows) {
@@ -49,76 +42,69 @@ function aggregateMonthly(rows) {
   rows.forEach((r) => {
     const k = monthKey(r.date);
     incomeMap.set(k, (incomeMap.get(k) || 0) + r.income);
-    if (r.essential_expense != null) {
-      expenseMap.set(k, (expenseMap.get(k) || 0) + r.essential_expense);
-    }
+    if (r.essential_expense != null) expenseMap.set(k, (expenseMap.get(k) || 0) + r.essential_expense);
   });
 
   const months = [...incomeMap.keys()].sort();
-  const incomes = months.map((m) => incomeMap.get(m));
-  const expenses = months.map((m) => expenseMap.get(m) || 0);
-  return { months, incomes, expenses };
+  return {
+    months,
+    incomes: months.map((m) => incomeMap.get(m)),
+    expenses: months.map((m) => expenseMap.get(m) || 0),
+  };
 }
 
-function mean(arr) {
-  if (!arr.length) return 0;
-  return arr.reduce((a, b) => a + b, 0) / arr.length;
-}
-
+const mean = (arr) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0);
 function stddev(arr) {
   if (arr.length < 2) return 0;
   const mu = mean(arr);
-  const variance = mean(arr.map((v) => (v - mu) ** 2));
-  return Math.sqrt(variance);
+  return Math.sqrt(mean(arr.map((v) => (v - mu) ** 2)));
 }
-
-function sigmoid(x) {
-  return 1 / (1 + Math.exp(-x));
-}
+const sigmoid = (x) => 1 / (1 + Math.exp(-x));
 
 function instabilityProbability(incomes) {
   if (incomes.length < 2) return 0.5;
   const mu = mean(incomes);
   const sigma = stddev(incomes);
-  const latest = incomes[incomes.length - 1];
-  if (sigma === 0) return 0.2;
+  if (!sigma) return 0.2;
 
-  const z = (mu - latest) / sigma;
-  let risk = sigmoid(z);
-  if (incomes.length >= 3 && incomes[incomes.length - 1] < incomes[incomes.length - 2] && incomes[incomes.length - 2] < incomes[incomes.length - 3]) {
-    risk += 0.1;
-  }
+  const latest = incomes[incomes.length - 1];
+  let risk = sigmoid((mu - latest) / sigma);
+  if (incomes.length >= 3 && incomes.at(-1) < incomes.at(-2) && incomes.at(-2) < incomes.at(-3)) risk += 0.1;
   return Math.max(0.05, Math.min(0.95, risk));
 }
 
 function nextMonthLabel(lastMonth, offset) {
-  const [yRaw, mRaw] = lastMonth.split("-").map(Number);
-  let year = yRaw;
-  let month = mRaw + offset;
+  let [year, month] = lastMonth.split("-").map(Number);
+  month += offset;
   year += Math.floor((month - 1) / 12);
   month = ((month - 1) % 12) + 1;
   return `${year}-${String(month).padStart(2, "0")}`;
 }
 
-function recommendations(incomes, expenses, prob) {
+function recommendations(incomes, expenses, risk) {
   const expenseHistory = expenses.filter((e) => e > 0);
   const monthlyExpense = expenseHistory.length ? mean(expenseHistory) : 0.6 * mean(incomes);
-  const efMonths = prob >= 0.7 ? 3 : prob >= 0.45 ? 2 : 1.5;
+  const efMonths = risk >= 0.7 ? 3 : risk >= 0.45 ? 2 : 1.5;
   const targetFund = monthlyExpense * efMonths;
   const weeklySaving = targetFund / 24;
-
-  const insurance =
-    prob >= 0.7
-      ? "Buy/top-up micro-insurance this month (high risk)."
-      : prob >= 0.45
-      ? "Prepare top-up or renewal next month (moderate risk)."
-      : "Maintain base cover and re-check monthly (low risk).";
 
   return {
     targetFund,
     weeklySaving,
-    insurance,
+    efMonths,
+    insurance:
+      risk >= 0.7
+        ? "Buy or top-up micro-insurance this month (high risk window)."
+        : risk >= 0.45
+        ? "Prepare renewal/top-up in next 30 days (moderate risk)."
+        : "Maintain base cover and review every month (lower risk).",
   };
+}
+
+function riskMeta(risk) {
+  if (risk >= 0.7) return { label: "High", cls: "high" };
+  if (risk >= 0.45) return { label: "Moderate", cls: "medium" };
+  return { label: "Low", cls: "low" };
 }
 
 const SAMPLE = `date,income,essential_expense
@@ -140,6 +126,13 @@ function App() {
   const [monthsAhead, setMonthsAhead] = useState(3);
   const [error, setError] = useState("");
 
+  async function onFileUpload(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    setCsvText(text);
+  }
+
   const computed = useMemo(() => {
     try {
       const rows = parseCSV(csvText);
@@ -151,76 +144,100 @@ function App() {
       const rec = recommendations(incomes, expenses, risk);
       const forecast = Array.from({ length: monthsAhead }, (_, i) => {
         const p = Math.min(0.95, risk + i * 0.02);
-        const label = p >= 0.7 ? "HIGH" : p >= 0.45 ? "MEDIUM" : "LOW";
-        return { month: nextMonthLabel(months[months.length - 1], i + 1), prob: p, label };
+        return { month: nextMonthLabel(months.at(-1), i + 1), prob: p, ...riskMeta(p) };
       });
-
       setError("");
-      return { months, mu, sigma, cv, risk, rec, forecast };
+      return { months, rows, mu, sigma, cv, risk, rec, forecast };
     } catch (e) {
       setError(e.message || "Unable to parse CSV");
       return null;
     }
   }, [csvText, monthsAhead]);
 
+  const risk = computed?.risk || 0;
+  const riskInfo = riskMeta(risk);
+
   return (
     <div className="container">
-      <h1>Income Instability Insurance Predictor</h1>
-      <p>React web interface for gig-worker income risk forecasting and action planning.</p>
+      <header className="hero card">
+        <div>
+          <p className="eyebrow">Gig-worker financial safety</p>
+          <h1>Income Instability Predictor</h1>
+          <p className="subtitle">Forecast unstable months and get friendly emergency-fund + insurance timing guidance.</p>
+        </div>
+        <div className={`risk-chip ${riskInfo.cls}`}>
+          <span>Current Risk</span>
+          <strong>{computed ? `${Math.round(risk * 100)}% (${riskInfo.label})` : "—"}</strong>
+        </div>
+      </header>
 
-      <div className="card">
-        <h2>Input CSV</h2>
-        <p>Required columns: <code>date</code>, <code>income</code>. Optional: <code>essential_expense</code>.</p>
-        <textarea value={csvText} onChange={(e) => setCsvText(e.target.value)} />
-        <div className="controls" style={{ marginTop: "0.8rem" }}>
-          <label>
+      <section className="card">
+        <h2>1) Add your income data</h2>
+        <p className="muted">Use columns: <code>date</code>, <code>income</code>, optional <code>essential_expense</code>.</p>
+
+        <div className="actions-row">
+          <label className="upload-btn">
+            Upload CSV
+            <input type="file" accept=".csv,text/csv" onChange={onFileUpload} hidden />
+          </label>
+          <button onClick={() => setCsvText(SAMPLE)}>Load sample</button>
+          <button className="ghost" onClick={() => setCsvText("")}>Clear</button>
+          <label className="months-control">
             Forecast months
             <input type="number" min="1" max="12" value={monthsAhead} onChange={(e) => setMonthsAhead(Math.max(1, Math.min(12, Number(e.target.value) || 1)))} />
           </label>
         </div>
+
+        <textarea value={csvText} onChange={(e) => setCsvText(e.target.value)} placeholder="Paste your CSV here..." />
         {error && <p className="error">{error}</p>}
-      </div>
+      </section>
 
       {computed && (
         <>
-          <div className="card grid">
-            <div className="kpi">
-              <div className="kpi-label">Data range</div>
-              <div className="kpi-value">{computed.months[0]} → {computed.months[computed.months.length - 1]}</div>
-            </div>
-            <div className="kpi">
-              <div className="kpi-label">Mean monthly income</div>
-              <div className="kpi-value">₹{computed.mu.toFixed(0)}</div>
-            </div>
-            <div className="kpi">
-              <div className="kpi-label">Monthly volatility (std dev)</div>
-              <div className="kpi-value">₹{computed.sigma.toFixed(0)}</div>
-            </div>
-            <div className="kpi">
-              <div className="kpi-label">Coefficient of variation</div>
-              <div className="kpi-value">{computed.cv.toFixed(2)}</div>
-            </div>
-          </div>
+          <section className="grid kpi-grid">
+            <article className="kpi card"><span>Records</span><strong>{computed.rows.length}</strong></article>
+            <article className="kpi card"><span>Mean monthly income</span><strong>₹{computed.mu.toFixed(0)}</strong></article>
+            <article className="kpi card"><span>Monthly volatility</span><strong>₹{computed.sigma.toFixed(0)}</strong></article>
+            <article className="kpi card"><span>Coefficient of variation</span><strong>{computed.cv.toFixed(2)}</strong></article>
+          </section>
 
-          <div className="card">
-            <h2>Forecast</h2>
-            <ul>
-              {computed.forecast.map((f) => (
-                <li key={f.month} className={f.label.toLowerCase()}>
-                  {f.month}: {(f.prob * 100).toFixed(0)}% ({f.label})
-                </li>
-              ))}
-            </ul>
-          </div>
+          <section className="card">
+            <h2>2) Instability forecast</h2>
+            <div className="risk-meter">
+              <div className={`risk-fill ${riskInfo.cls}`} style={{ width: `${Math.round(risk * 100)}%` }} />
+            </div>
+            <p className="muted">Data range: {computed.months[0]} → {computed.months.at(-1)}</p>
 
-          <div className="card">
-            <h2>Recommendations</h2>
-            <ul>
-              <li>Emergency fund target: ₹{computed.rec.targetFund.toFixed(0)}</li>
-              <li>Suggested weekly savings: ₹{computed.rec.weeklySaving.toFixed(0)} for 24 weeks</li>
-              <li>{computed.rec.insurance}</li>
-            </ul>
-          </div>
+            <table>
+              <thead><tr><th>Month</th><th>Instability</th><th>Level</th></tr></thead>
+              <tbody>
+                {computed.forecast.map((f) => (
+                  <tr key={f.month}>
+                    <td>{f.month}</td>
+                    <td>{Math.round(f.prob * 100)}%</td>
+                    <td><span className={`tag ${f.cls}`}>{f.label}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </section>
+
+          <section className="grid rec-grid">
+            <article className="card rec">
+              <h3>Emergency fund</h3>
+              <p className="big">₹{computed.rec.targetFund.toFixed(0)}</p>
+              <p className="muted">Target for ~{computed.rec.efMonths} months essential expenses</p>
+            </article>
+            <article className="card rec">
+              <h3>Weekly savings plan</h3>
+              <p className="big">₹{computed.rec.weeklySaving.toFixed(0)} / week</p>
+              <p className="muted">For a 24-week runway</p>
+            </article>
+            <article className="card rec">
+              <h3>Micro-insurance timing</h3>
+              <p>{computed.rec.insurance}</p>
+            </article>
+          </section>
         </>
       )}
     </div>
