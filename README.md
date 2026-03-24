@@ -42,3 +42,21 @@ python3 app.py --input your_income.csv --months-ahead 3
 ## Notes
 - This is an MVP prototype for local use.
 - There is no deployed web/mobile app URL in this repo yet.
+
+## Web interface (React)
+A browser-based React interface is available in `web/`.
+
+### Run locally
+```bash
+python3 -m http.server 8000
+```
+Then open:
+- `http://localhost:8000/web/`
+
+The UI lets you paste CSV data and get instability forecasts + recommendations instantly.
+
+### One-command launch
+```bash
+./run_web.sh 8000
+```
+Then open `http://localhost:8000/web/`.
