@@ -54,3 +54,9 @@ Then open:
 - `http://localhost:8000/web/`
 
 The UI lets you paste CSV data and get instability forecasts + recommendations instantly.
+
+### One-command launch
+```bash
+./run_web.sh 8000
+```
+Then open `http://localhost:8000/web/`.
